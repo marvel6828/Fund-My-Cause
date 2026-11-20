@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Replaced duplicated proportional calculations in vesting, stream claims, cancellation refunds, and rewards with `common::math::proportional` (#1558).
 - Reused `common::math::ratio_bps` for campaign progress and success-rate analytics (#1558).
+- Moved `extend_deadline` and `adjust_goal` from inline `lib.rs` into `lifecycle.rs`, completing the module split (#1709).
+- Batched all instance-storage reads in `contribute_on_behalf` into a single up-front block, eliminating repeated round-trips per key (#1710).
+
+### Security
+- Added `require_auth` to `refund_single` so only the contributor themselves can claim their own refund (#1708).
+- Added negative authorization tests for `refund_single`, `cancel_campaign`, and `pause` to pin the auth requirements as regressions (#1708).
 
 ## [0.1.0] - 2026-03-28
 

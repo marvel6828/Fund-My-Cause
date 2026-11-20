@@ -655,16 +655,22 @@ pub(crate) fn contribute_on_behalf(
         return Err(ContractError::ExceedsMaximum);
     }
 
-    // Perform the contribution as if delegator is contributing
-    let min: i128 = env.storage().instance().get(&KEY_MIN).unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, ContractError::NotFound));
-    validate_min_contribution(amount, min)?;
+    // === Batch all instance reads up-front (single storage access)
+    let inst = env.storage().instance();
+    let min: i128 = inst.get(&KEY_MIN).unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, ContractError::NotFound));
+    let status: Status = inst.get(&KEY_STATUS).unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, ContractError::NotFound));
+    let deadline: u64 = inst.get(&KEY_DEADLINE).unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, ContractError::NotFound));
+    let max: i128 = inst.get(&KEY_MAX).unwrap_or(0);
+    let whitelist_only: bool = inst.get(&DataKey::WhitelistOnly).unwrap_or(false);
+    let visibility: Visibility = inst.get(&KEY_VISIBILITY).unwrap_or(Visibility::Public);
+    let total: i128 = inst.get(&KEY_TOTAL).unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, ContractError::NotFound));
 
-    let status: Status = env.storage().instance().get(&KEY_STATUS).unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, ContractError::NotFound));
+    // Perform the contribution as if delegator is contributing
+    validate_min_contribution(amount, min)?;
     if status != Status::Active {
         return Err(ContractError::NotActive);
     }
 
-    let deadline: u64 = env.storage().instance().get(&KEY_DEADLINE).unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, ContractError::NotFound));
     validate_deadline_not_passed(env.ledger().timestamp(), deadline)?;
 
     // ── Per-contributor cap (#927: this path previously never enforced ────
@@ -673,7 +679,6 @@ pub(crate) fn contribute_on_behalf(
     // contribution could silently bypass the campaign cap that direct
     // `contribute()` calls enforce. Reusing the same shared helper closes
     // that gap.
-    let max: i128 = env.storage().instance().get(&KEY_MAX).unwrap_or(0);
     let key = DataKey::Contribution(delegator.clone());
     let prev: i128 = env.storage().persistent().get(&key).unwrap_or(0);
     validate_contributor_cap(amount, max, prev)?;
@@ -688,16 +693,6 @@ pub(crate) fn contribute_on_behalf(
         return Err(ContractError::Blacklisted);
     }
 
-    let whitelist_only: bool = env
-        .storage()
-        .instance()
-        .get(&DataKey::WhitelistOnly)
-        .unwrap_or(false);
-    let visibility: Visibility = env
-        .storage()
-        .instance()
-        .get(&KEY_VISIBILITY)
-        .unwrap_or(Visibility::Public);
     if (whitelist_only || visibility == Visibility::Private)
         && !env
             .storage()
@@ -729,9 +724,8 @@ pub(crate) fn contribute_on_behalf(
         TTL_PERSISTENT_ENTRY,
     );
 
-    let total: i128 = env.storage().instance().get(&KEY_TOTAL).unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, ContractError::NotFound));
     let new_total = total.checked_add(amount).ok_or(ContractError::Overflow)?;
-    env.storage().instance().set(&KEY_TOTAL, &new_total);
+    inst.set(&KEY_TOTAL, &new_total);
 
     let presence_key = DataKey::ContributorPresence(delegator.clone());
     let is_present: bool = env
@@ -746,9 +740,7 @@ pub(crate) fn contribute_on_behalf(
             TTL_PERSISTENT_ENTRY,
             TTL_PERSISTENT_ENTRY,
         );
-        let count: u32 = env
-            .storage()
-            .instance()
+        let count: u32 = inst
             .get(&DataKey::ContributorCount)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, ContractError::NotFound));
         // O(1) indexed write, same pattern as contribute()
@@ -760,9 +752,7 @@ pub(crate) fn contribute_on_behalf(
             TTL_PERSISTENT_ENTRY,
         );
         let new_count = count.checked_add(1).ok_or(ContractError::Overflow)?;
-        env.storage()
-            .instance()
-            .set(&DataKey::ContributorCount, &new_count);
+        inst.set(&DataKey::ContributorCount, &new_count);
     }
 
     env.events().publish(

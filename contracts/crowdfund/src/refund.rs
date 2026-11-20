@@ -35,6 +35,8 @@ use crate::{
 /// - `Err(ContractError::CampaignStillActive)` if the deadline has not passed
 /// - `Err(ContractError::GoalReached)` if the goal was met
 pub(crate) fn refund_single(env: Env, contributor: Address) -> Result<(), ContractError> {
+    common::AccessControl::require_role_auth(&contributor);
+
     // === Batch instance reads up-front
     let inst = env.storage().instance();
     // #835: these keys are absent on an un-initialised contract. Defaulting to the

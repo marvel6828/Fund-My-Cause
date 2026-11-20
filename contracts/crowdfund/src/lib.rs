@@ -631,25 +631,7 @@ impl CrowdfundContract {
     /// - Updates deadline in storage
     /// - Publishes "deadline_extended" event with new deadline
     pub fn extend_deadline(env: Env, new_deadline: u64) -> Result<(), ContractError> {
-        let inst = env.storage().instance();
-        let status: Status = inst.get(&KEY_STATUS).unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, ContractError::NotFound));
-        if status != Status::Active {
-            return Err(ContractError::NotActive);
-        }
-        let creator: Address = inst.get(&KEY_CREATOR).unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, ContractError::NotFound));
-        common::AccessControl::require_role_auth(&creator);
-
-        let old_deadline: u64 = inst.get(&KEY_DEADLINE).unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, ContractError::NotFound));
-        validate_deadline_extension(new_deadline, old_deadline)?;
-        inst.set(&KEY_DEADLINE, &new_deadline);
-        env.events().publish(
-            ("crowdfund", "deadline_extended"),
-            EventDeadlineExtended {
-                old_deadline,
-                new_deadline,
-            },
-        );
-        Ok(())
+        lifecycle::extend_deadline(env, new_deadline)
     }
 
     // ── Issue #420 — Dynamic Goal Adjustment ─────────────────────────────────
@@ -676,51 +658,7 @@ impl CrowdfundContract {
     /// - Appends a [`GoalAdjustment`] entry to persistent `KEY_GOAL_HISTORY`
     /// - Publishes `("crowdfund", "goal_adjusted")` event
     pub fn adjust_goal(env: Env, new_goal: i128) -> Result<(), ContractError> {
-        let inst = env.storage().instance();
-        let status: Status = inst.get(&KEY_STATUS).unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, ContractError::NotFound));
-        if status != Status::Active {
-            return Err(ContractError::NotActive);
-        }
-        let creator: Address = inst.get(&KEY_CREATOR).unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, ContractError::NotFound));
-        common::AccessControl::require_role_auth(&creator);
-
-        if new_goal <= 0 {
-            return Err(ContractError::InvalidGoal);
-        }
-        validate_goal_not_overflow(new_goal)?;
-
-        let previous_goal: i128 = inst.get(&KEY_GOAL).unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, ContractError::NotFound));
-        inst.set(&KEY_GOAL, &new_goal);
-
-        let now = env.ledger().timestamp();
-        let mut history: Vec<GoalAdjustment> = env
-            .storage()
-            .persistent()
-            .get(&KEY_GOAL_HISTORY)
-            .unwrap_or_else(|| Vec::new(&env));
-        history.push_back(GoalAdjustment {
-            previous_goal,
-            new_goal,
-            timestamp: now,
-        });
-        env.storage().persistent().set(&KEY_GOAL_HISTORY, &history);
-        env.storage().persistent().extend_ttl(
-            &KEY_GOAL_HISTORY,
-            TTL_PERSISTENT_ENTRY,
-            TTL_PERSISTENT_ENTRY,
-        );
-
-        inst.extend_ttl(TTL_INSTANCE_EXTEND_MIN, TTL_INSTANCE_EXTEND_MAX);
-
-        env.events().publish(
-            ("crowdfund", "goal_adjusted"),
-            EventGoalAdjusted {
-                previous_goal,
-                new_goal,
-                timestamp: now,
-            },
-        );
-        Ok(())
+        lifecycle::adjust_goal(env, new_goal)
     }
 
     /// Cancels the campaign, allowing all contributors to claim refunds.

@@ -12,13 +12,13 @@ use crate::{
         DataKey, KEY_ADMIN, KEY_ARCHIVED, KEY_CATEGORY, KEY_CREATOR, KEY_DEADLINE, KEY_DESC,
         KEY_GOAL, KEY_GOAL_HISTORY, KEY_MAX, KEY_META_HIST, KEY_MIN, KEY_PLATFORM, KEY_SOCIAL,
         KEY_START_TIME, KEY_STATUS, KEY_TITLE, KEY_TOKEN, KEY_TOTAL, KEY_VESTING, KEY_VISIBILITY,
-        TTL_PERSISTENT_ENTRY,
+        TTL_INSTANCE_EXTEND_MAX, TTL_INSTANCE_EXTEND_MIN, TTL_PERSISTENT_ENTRY,
     },
     types::{
         CampaignTemplate, Category, EventArchived, EventCampaignCloned, EventCancelled,
-        EventInitialized, EventStatusChanged, EventTemplateApplied, GoalAdjustment,
-        MetadataVersion, PlatformConfig, Status, TemplateType, VestingSchedule, Visibility,
-        EVENT_SCHEMA_VERSION,
+        EventDeadlineExtended, EventGoalAdjusted, EventInitialized, EventStatusChanged,
+        EventTemplateApplied, GoalAdjustment, MetadataVersion, PlatformConfig, Status,
+        TemplateType, VestingSchedule, Visibility, EVENT_SCHEMA_VERSION,
     },
     validation::{
         validate_address_not_self, validate_category, validate_deadline_extension,
@@ -473,4 +473,89 @@ pub(crate) fn is_archived(env: Env) -> bool {
 /// Returns the archival timestamp if the campaign has been archived.
 pub(crate) fn get_archived_at(env: Env) -> Option<u64> {
     env.storage().instance().get(&KEY_ARCHIVED)
+}
+
+// === Deadline / Goal adjustment
+
+/// Extends the campaign deadline to a later time (creator only).
+///
+/// # Returns
+/// - `Ok(())` on success
+/// - `Err(ContractError::NotActive)` if campaign is not in Active status
+/// - `Err(ContractError::InvalidDeadline)` if new_deadline <= current_deadline
+pub(crate) fn extend_deadline(env: Env, new_deadline: u64) -> Result<(), ContractError> {
+    let inst = env.storage().instance();
+    let status: Status = inst.get(&KEY_STATUS).unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, ContractError::NotFound));
+    if status != Status::Active {
+        return Err(ContractError::NotActive);
+    }
+    let creator: Address = inst.get(&KEY_CREATOR).unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, ContractError::NotFound));
+    common::AccessControl::require_role_auth(&creator);
+
+    let old_deadline: u64 = inst.get(&KEY_DEADLINE).unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, ContractError::NotFound));
+    validate_deadline_extension(new_deadline, old_deadline)?;
+    inst.set(&KEY_DEADLINE, &new_deadline);
+    env.events().publish(
+        ("crowdfund", "deadline_extended"),
+        EventDeadlineExtended {
+            old_deadline,
+            new_deadline,
+        },
+    );
+    Ok(())
+}
+
+/// Adjusts the campaign funding goal mid-campaign (creator only).
+///
+/// # Returns
+/// - `Ok(())` on success
+/// - `Err(ContractError::NotActive)` if campaign is not in Active status
+/// - `Err(ContractError::InvalidGoal)` if new_goal <= 0
+/// - `Err(ContractError::GoalOverflow)` if new_goal is dangerously large
+pub(crate) fn adjust_goal(env: Env, new_goal: i128) -> Result<(), ContractError> {
+    let inst = env.storage().instance();
+    let status: Status = inst.get(&KEY_STATUS).unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, ContractError::NotFound));
+    if status != Status::Active {
+        return Err(ContractError::NotActive);
+    }
+    let creator: Address = inst.get(&KEY_CREATOR).unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, ContractError::NotFound));
+    common::AccessControl::require_role_auth(&creator);
+
+    if new_goal <= 0 {
+        return Err(ContractError::InvalidGoal);
+    }
+    validate_goal_not_overflow(new_goal)?;
+
+    let previous_goal: i128 = inst.get(&KEY_GOAL).unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, ContractError::NotFound));
+    inst.set(&KEY_GOAL, &new_goal);
+
+    let now = env.ledger().timestamp();
+    let mut history: Vec<GoalAdjustment> = env
+        .storage()
+        .persistent()
+        .get(&KEY_GOAL_HISTORY)
+        .unwrap_or_else(|| Vec::new(&env));
+    history.push_back(GoalAdjustment {
+        previous_goal,
+        new_goal,
+        timestamp: now,
+    });
+    env.storage().persistent().set(&KEY_GOAL_HISTORY, &history);
+    env.storage().persistent().extend_ttl(
+        &KEY_GOAL_HISTORY,
+        TTL_PERSISTENT_ENTRY,
+        TTL_PERSISTENT_ENTRY,
+    );
+
+    inst.extend_ttl(TTL_INSTANCE_EXTEND_MIN, TTL_INSTANCE_EXTEND_MAX);
+
+    env.events().publish(
+        ("crowdfund", "goal_adjusted"),
+        EventGoalAdjusted {
+            previous_goal,
+            new_goal,
+            timestamp: now,
+        },
+    );
+    Ok(())
 }

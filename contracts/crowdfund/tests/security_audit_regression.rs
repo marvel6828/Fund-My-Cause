@@ -113,6 +113,68 @@ fn refund_requires_contributor_auth() {
     );
 }
 
+/// `refund_single` by an unauthorized third party must be rejected: a
+/// different address cannot initiate a refund on behalf of the contributor.
+#[test]
+fn refund_single_rejected_for_unauthorized_caller() {
+    let env = Env::default();
+    let deadline = 1_000u64;
+    let goal = 1_000_000i128;
+    let c = setup(&env, goal, deadline, None);
+
+    let contributor = Address::generate(&env);
+    c.token_admin.mock_all_auths().mint(&contributor, &10_000);
+    env.mock_all_auths();
+    env.ledger().set_timestamp(500);
+    c.client.contribute(&contributor, &5_000, &c.token_id, &None);
+
+    env.ledger().set_timestamp(deadline + 1);
+
+    // Only the contributor themselves may authorise their own refund.
+    env.set_auths(&[]);
+    let third_party = Address::generate(&env);
+    let _ = third_party; // address is distinct; no auths provided
+    let result = c.client.try_refund_single(&contributor);
+    assert!(
+        result.is_err(),
+        "refund_single must reject a call not authorized by the contributor"
+    );
+}
+
+/// `cancel_campaign` must require the creator's authorization; a random
+/// address must not be able to cancel an active campaign.
+#[test]
+fn cancel_campaign_requires_creator_auth() {
+    let env = Env::default();
+    let deadline = 1_000u64;
+    let goal = 1_000i128;
+    let c = setup(&env, goal, deadline, None);
+
+    env.set_auths(&[]);
+    let result = c.client.try_cancel_campaign();
+    assert!(
+        result.is_err(),
+        "cancel_campaign must fail without the creator's require_auth"
+    );
+}
+
+/// `pause` must require admin authorization; an unauthenticated call must be
+/// rejected.
+#[test]
+fn pause_requires_admin_auth() {
+    let env = Env::default();
+    let deadline = 1_000u64;
+    let goal = 1_000i128;
+    let c = setup(&env, goal, deadline, None);
+
+    env.set_auths(&[]);
+    let result = c.client.try_pause();
+    assert!(
+        result.is_err(),
+        "pause must fail without admin require_auth"
+    );
+}
+
 /// Checks-effects-interactions: a withdrawal that fails validation (e.g.
 /// goal not reached) must not have mutated the `KEY_RELEASED` /
 /// total-released state before the (unreached) token transfer, and calling
